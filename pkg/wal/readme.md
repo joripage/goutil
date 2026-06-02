@@ -159,21 +159,24 @@ indicative — fsync latency in particular is dominated by the host's storage.
 | Benchmark | Payload | ns/op | Throughput | allocs/op |
 | --- | ---: | ---: | ---: | ---: |
 | `EncodeFrame` | 64 B | 28 | 2.3 GB/s | 1 |
-| `EncodeFrame` | 1 KiB | 51 | 20 GB/s | 1 |
-| `EncodeFrame` | 4 KiB | 151 | 27 GB/s | 1 |
-| `ReadFrame` | 64 B | 48 | 1.3 GB/s | 2 |
-| `ReadFrame` | 1 KiB | 77 | 13 GB/s | 2 |
-| `Append` (enqueue) | 64 B | 163 | — | 4 |
-| `Append` (enqueue) | 256 B | 280 | — | 4 |
-| `Append` (enqueue) | 1 KiB | 648 | — | 4 |
-| `AppendParallel` (enqueue) | 256 B | 264 | — | 4 |
-| `AppendDurable` (append + fsync, serial) | 256 B | 4,122,000 | — | 5 |
+| `EncodeFrame` | 1 KiB | 54 | 19 GB/s | 1 |
+| `EncodeFrame` | 4 KiB | 156 | 26 GB/s | 1 |
+| `ReadFrame` | 64 B | 50 | 1.3 GB/s | 2 |
+| `ReadFrame` | 1 KiB | 76 | 14 GB/s | 2 |
+| `Append` (enqueue) | 64 B | 154 | — | 4 |
+| `Append` (enqueue) | 256 B | 272 | — | 4 |
+| `Append` (enqueue) | 1 KiB | 345 | — | 4 |
+| `AppendParallel` (enqueue) | 256 B | 268 | — | 4 |
+| `AppendDurable` (append + fsync, serial) | 256 B | ~1.6–4 M | — | 5 |
 
 Key takeaway: the **enqueue** path (`Append` returning) is sub-microsecond, but
-a **serial** `Append`-then-wait-for-fsync is ~4 ms/op because every record pays
-a full `fsync`. Group commit is what closes that gap — under concurrent load
-many records share one `fsync` within the `FlushInterval` window, so durable
-throughput is orders of magnitude higher than the serial figure suggests.
+a **serial** `Append`-then-wait-for-fsync is on the order of milliseconds
+because every record pays a full `fsync` (and it is storage-bound, so the
+absolute figure swings widely between runs). Group commit is what closes that
+gap — under concurrent load many records share one `fsync` within the
+`FlushInterval` window, so durable throughput is orders of magnitude higher
+than the serial figure suggests.
+
 `Append` / `ReadFrame` allocations come from the per-record framed buffer and
 the decoded payload; `EncodeFrame` is a single amortised allocation when its
 buffer is reused.

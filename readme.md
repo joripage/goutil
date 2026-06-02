@@ -81,13 +81,14 @@ fsync latency is storage-bound — the serial durable figure is a worst case.
 | Benchmark | Payload | ns/op | allocs/op |
 | --- | ---: | ---: | ---: |
 | `EncodeFrame` | 64 B | 28 | 1 |
-| `EncodeFrame` | 4 KiB | 151 | 1 |
-| `ReadFrame` | 64 B | 48 | 2 |
-| `ReadFrame` | 1 KiB | 77 | 2 |
-| `Append` (enqueue) | 256 B | 280 | 4 |
-| `AppendParallel` (enqueue) | 256 B | 264 | 4 |
-| `AppendDurable` (append + fsync, serial) | 256 B | 4,122,000 | 5 |
+| `EncodeFrame` | 4 KiB | 156 | 1 |
+| `ReadFrame` | 64 B | 50 | 2 |
+| `ReadFrame` | 1 KiB | 76 | 2 |
+| `Append` (enqueue) | 256 B | 272 | 4 |
+| `AppendParallel` (enqueue) | 256 B | 268 | 4 |
+| `AppendDurable` (append + fsync, serial) | 256 B | ~1.6–4 M | 5 |
 
-The enqueue path is sub-microsecond; a serial append-then-fsync is ~4 ms/op
-because every record pays a full `fsync`. Group commit closes that gap — under
-concurrent load many records share one `fsync` per `FlushInterval` window.
+The enqueue path is sub-microsecond; a serial append-then-fsync is on the order
+of milliseconds (storage-bound, varies widely) because every record pays a full
+`fsync`. Group commit closes that gap — under concurrent load many records share
+one `fsync` per `FlushInterval` window.

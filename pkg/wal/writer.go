@@ -264,16 +264,35 @@ func (w *Writer) HaltErr() error {
 // callers wait on it before releasing an ack-after-flush response. Callers
 // MUST NOT mutate payload after the call; the writer owns the framed bytes.
 //
-// The terminal-state checks, seqNo assignment, and enqueue all happen under
-// the same mutex as Close/halt's state transition. This is what prevents a
-// record from slipping into `pending` after the flusher has stopped — which
-// would leave its durable channel forever open and hang Sync().
+// Correctness vs. the flusher/Close/halt uses a double-check on the terminal
+// flags: a cheap atomic pre-check avoids burning a seqNo on the common
+// already-closed path, and an AUTHORITATIVE re-check under the same mutex that
+// Close/halt use guarantees no record can enter `pending` after the flusher
+// has stopped (which would strand its durable channel and hang Sync()).
+//
+// EncodeFrame runs OUTSIDE the lock on purpose — it allocates and computes a
+// crc, so keeping it out of the critical section keeps concurrent appends from
+// serialising on the encode. The frame is fully built before the record is
+// published into `pending`, so the flusher never observes a half-set record.
 func (w *Writer) Append(kind Kind, payload []byte) (seqNo uint64, durable <-chan struct{}, err error) {
 	if len(payload) > MaxPayloadBytes {
 		return 0, nil, ErrPayloadTooLarge
 	}
+	// Fast path — skip the work (and the seqNo) if we're already shut down.
+	if w.closed.Load() {
+		return 0, nil, ErrClosed
+	}
+	if w.haltErr.Load() != nil {
+		return 0, nil, ErrUnavailable
+	}
+
+	seqNo = w.seqNo.Add(1)
+	framed := EncodeFrame(nil, seqNo, kind, payload)
+	rec := &record{seqNo: seqNo, framed: framed, durable: make(chan struct{})}
 
 	w.mu.Lock()
+	// Authoritative re-check: Close/halt flip these under this same lock, so if
+	// either won the race the record must NOT be enqueued.
 	if w.closed.Load() {
 		w.mu.Unlock()
 		return 0, nil, ErrClosed
@@ -282,12 +301,6 @@ func (w *Writer) Append(kind Kind, payload []byte) (seqNo uint64, durable <-chan
 		w.mu.Unlock()
 		return 0, nil, ErrUnavailable
 	}
-
-	// seqNo is assigned under the lock so it matches enqueue order, which is
-	// also the on-disk frame order.
-	seqNo = w.seqNo.Add(1)
-	framed := EncodeFrame(nil, seqNo, kind, payload)
-	rec := &record{seqNo: seqNo, framed: framed, durable: make(chan struct{})}
 	w.pending = append(w.pending, rec)
 	full := len(w.pending) >= w.opts.MaxBatchRecords
 	w.mu.Unlock()
