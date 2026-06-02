@@ -50,3 +50,45 @@ Generic, mutex-guarded wrapper around any value (`AtomicStruct[T]`). Gives
 shared structs thread-safe `Get`/`Set`/`Read`/`Update` semantics, plus an
 atomic check-then-act `UpdateWithCondition` for safe state transitions
 without bespoke locking on every call site.
+
+#### Benchmark atomicstruct
+
+Mutex-guarded access is a few nanoseconds and allocation-free on the hot path.
+
+| Benchmark | ns/op | allocs/op |
+| --- | ---: | ---: |
+| `Get` | 11 | 0 |
+| `Read` | 11 | 0 |
+| `Update` | 21 | 0 |
+| `Set` | 24 | 0 |
+| `GetParallel` | 42 | 0 |
+| `MixedParallel` | 37 | 0 |
+| `UpdateParallel` | 58 | 0 |
+
+### [wal](./pkg/wal)
+
+Generic Write-Ahead Log — an append-only, length-framed binary log with
+monotonic sequence numbers, group commit, and ack-after-flush durability. It
+stores raw `[]byte` records tagged with a caller-defined `Kind`, with `crc32c`
+integrity, automatic segment rotation, and tail-torn tolerance on replay.
+Drop-in crash-safe persistence: `Append` returns a channel that closes once
+the record is fsynced, and `ScanAll` replays every segment back in order.
+
+#### Benchmark wal
+
+fsync latency is storage-bound — the serial durable figure is a worst case.
+
+| Benchmark | Payload | ns/op | allocs/op |
+| --- | ---: | ---: | ---: |
+| `EncodeFrame` | 64 B | 28 | 1 |
+| `EncodeFrame` | 4 KiB | 151 | 1 |
+| `ReadFrame` | 64 B | 48 | 2 |
+| `ReadFrame` | 1 KiB | 77 | 2 |
+| `Append` (enqueue) | 256 B | 280 | 4 |
+| `AppendParallel` (enqueue) | 256 B | 264 | 4 |
+| `AppendDurable` (append + fsync, serial) | 256 B | 4,122,000 | 5 |
+
+The enqueue path is sub-microsecond; a serial append-then-fsync is ~4 ms/op
+because every record pays a full `fsync`. Group commit closes that gap — under
+concurrent load many records share one `fsync` per `FlushInterval` window.
+
