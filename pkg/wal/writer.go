@@ -16,6 +16,11 @@ var ErrUnavailable = errors.New("wal: unavailable (fsync failure)")
 // ErrClosed is returned by Append after Close has run.
 var ErrClosed = errors.New("wal: closed")
 
+// ErrPayloadTooLarge is returned by Append when payload exceeds MaxPayloadBytes.
+// The record is rejected rather than silently truncated, so callers always know
+// when data would be lost.
+var ErrPayloadTooLarge = errors.New("wal: payload exceeds MaxPayloadBytes")
+
 // Options configure a Writer.
 type Options struct {
 	// Dir is the directory under which segment files live, e.g.
@@ -258,19 +263,31 @@ func (w *Writer) HaltErr() error {
 // and a `durable` channel that closes once the frame is on stable storage —
 // callers wait on it before releasing an ack-after-flush response. Callers
 // MUST NOT mutate payload after the call; the writer owns the framed bytes.
+//
+// The terminal-state checks, seqNo assignment, and enqueue all happen under
+// the same mutex as Close/halt's state transition. This is what prevents a
+// record from slipping into `pending` after the flusher has stopped — which
+// would leave its durable channel forever open and hang Sync().
 func (w *Writer) Append(kind Kind, payload []byte) (seqNo uint64, durable <-chan struct{}, err error) {
+	if len(payload) > MaxPayloadBytes {
+		return 0, nil, ErrPayloadTooLarge
+	}
+
+	w.mu.Lock()
 	if w.closed.Load() {
+		w.mu.Unlock()
 		return 0, nil, ErrClosed
 	}
 	if w.haltErr.Load() != nil {
+		w.mu.Unlock()
 		return 0, nil, ErrUnavailable
 	}
 
+	// seqNo is assigned under the lock so it matches enqueue order, which is
+	// also the on-disk frame order.
 	seqNo = w.seqNo.Add(1)
 	framed := EncodeFrame(nil, seqNo, kind, payload)
 	rec := &record{seqNo: seqNo, framed: framed, durable: make(chan struct{})}
-
-	w.mu.Lock()
 	w.pending = append(w.pending, rec)
 	full := len(w.pending) >= w.opts.MaxBatchRecords
 	w.mu.Unlock()
@@ -317,9 +334,17 @@ func (w *Writer) Sync() error {
 // active segment. It is safe to call once. Subsequent Append calls return
 // ErrClosed.
 func (w *Writer) Close() error {
-	if !w.closed.CompareAndSwap(false, true) {
+	// Flip `closed` under the same mutex Append takes, so any concurrent
+	// Append either enqueues before this (and is drained by the final flush)
+	// or observes closed and returns ErrClosed — never enqueues afterwards.
+	w.mu.Lock()
+	if w.closed.Load() {
+		w.mu.Unlock()
 		return nil
 	}
+	w.closed.Store(true)
+	w.mu.Unlock()
+
 	close(w.stopCh)
 	<-w.flushDone
 	// Wake any WaitDurable parked beyond the durable horizon — they get ErrClosed.
@@ -419,24 +444,36 @@ func (w *Writer) flushBatch() {
 }
 
 // halt enters the terminal failure state. It is sticky: only the FIRST halt
-// captures the underlying error. The records that were in-flight when the
-// failure happened and any later-queued records have their durable channels
-// left OPEN — instead, the caller must check IsHalted/HaltErr after every Sync
-// or after waiting on a durable channel with a timeout. We do close the durable
-// channels of the failed batch right now so any caller already blocked on
-// Sync() unblocks promptly and sees HaltErr().
+// captures the underlying error. Once halted, the failed batch AND anything
+// still queued in `pending` have their durable channels closed and `pending`
+// is cleared, so no record is left stranded with a channel that never closes
+// (which would hang a Sync() blocked on it). Callers must still check
+// IsHalted/HaltErr after a durable channel closes — a close under halt means
+// "give up", not "durable".
 func (w *Writer) halt(err error, failed []*record) {
-	if w.haltErr.CompareAndSwap(nil, &err) {
-		for _, r := range failed {
-			// safe-close — flushBatch only enters here on the failure path.
+	if !w.haltErr.CompareAndSwap(nil, &err) {
+		return
+	}
+	// Drain whatever raced in after the batch was taken. The haltErr CAS above
+	// happens before we take mu, so any Append still in flight either already
+	// enqueued (and is closed here) or will observe haltErr under mu and bail.
+	w.mu.Lock()
+	stranded := w.pending
+	w.pending = nil
+	w.mu.Unlock()
+
+	safeClose := func(rs []*record) {
+		for _, r := range rs {
 			select {
 			case <-r.durable:
 			default:
 				close(r.durable)
 			}
 		}
-		w.broadcastDurable()
 	}
+	safeClose(failed)
+	safeClose(stranded)
+	w.broadcastDurable()
 }
 
 // broadcastDurable wakes every goroutine parked in WaitDurable. Called after

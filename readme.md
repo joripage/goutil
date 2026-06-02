@@ -16,7 +16,7 @@ This repo includes a `Makefile` with common tasks:
 ```sh
 make test        # go test ./...
 make test-race   # go test -race ./...
-make bench       # go test -bench=. -benchmem ./pkg/atomicstruct/...
+make bench       # run all bench targets (atomicstruct, shardqueue, wal)
 make vet         # go vet ./...
 make all         # vet + test + test-race
 make help        # list available targets
@@ -91,4 +91,3 @@ fsync latency is storage-bound — the serial durable figure is a worst case.
 The enqueue path is sub-microsecond; a serial append-then-fsync is ~4 ms/op
 because every record pays a full `fsync`. Group commit closes that gap — under
 concurrent load many records share one `fsync` per `FlushInterval` window.
-

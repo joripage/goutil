@@ -2,6 +2,7 @@ package wal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -60,5 +61,27 @@ func TestFrameTruncated(t *testing.T) {
 func TestFrameEOFAtBoundary(t *testing.T) {
 	if _, _, err := ReadFrame(bytes.NewReader(nil), nil); err != io.EOF {
 		t.Fatalf("expected io.EOF, got %v", err)
+	}
+}
+
+func TestReadFrameBadPayloadLen(t *testing.T) {
+	buf := EncodeFrame(nil, 42, kCmd, []byte("small"))
+	// Corrupt the length field to exceed MaxPayloadBytes — ReadFrame must
+	// refuse to allocate rather than trust the header.
+	binary.LittleEndian.PutUint32(buf[0:4], MaxPayloadBytes+1)
+	if _, _, err := ReadFrame(bytes.NewReader(buf), nil); err != ErrBadPayloadLen {
+		t.Fatalf("expected ErrBadPayloadLen, got %v", err)
+	}
+}
+
+func TestFrameMaxPayloadBoundary(t *testing.T) {
+	big := bytes.Repeat([]byte{0xCD}, MaxPayloadBytes)
+	buf := EncodeFrame(nil, 100, kExec, big)
+	f, _, err := ReadFrame(bytes.NewReader(buf), nil)
+	if err != nil {
+		t.Fatalf("read at MaxPayloadBytes boundary: %v", err)
+	}
+	if len(f.Payload) != MaxPayloadBytes || !bytes.Equal(f.Payload, big) {
+		t.Fatalf("boundary roundtrip mismatch: got len=%d", len(f.Payload))
 	}
 }

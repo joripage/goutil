@@ -78,10 +78,15 @@ func ScanSegment(path string, visit func(Frame) error) (ScanResult, error) {
 			return res, nil
 		}
 		if errors.Is(err, ErrBadCRC) {
-			// CRC mismatch could be middle-of-file corruption (real bug) or
-			// tail torn write. We can't tell without peeking ahead; treat as
-			// tail-tolerated AND surface the flag so the caller can log loudly
-			// + halt if it wants stricter semantics.
+			// A bad CRC is only an expected torn tail when nothing follows it.
+			// If bytes still remain after the corrupt frame, this is real
+			// mid-stream corruption — surface it rather than silently dropping
+			// every later (possibly valid) frame.
+			if _, peekErr := sr.br.Peek(1); peekErr == nil {
+				return res, fmt.Errorf("wal: scan %s: %w", path, ErrBadCRC)
+			} else if !errors.Is(peekErr, io.EOF) {
+				return res, fmt.Errorf("wal: scan %s: peek after crc: %w", path, peekErr)
+			}
 			res.BadCRC = true
 			return res, nil
 		}

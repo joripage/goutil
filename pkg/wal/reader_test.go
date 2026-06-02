@@ -76,6 +76,26 @@ func TestScanAllMidStreamCorruptionFails(t *testing.T) {
 	}
 }
 
+func TestScanAllMidSegmentCorruptionFails(t *testing.T) {
+	dir := t.TempDir()
+	// 5 records in a single segment (default MaxSegmentBytes is huge).
+	writeNRecords(t, dir, 5, Options{})
+
+	// Corrupt the FIRST frame's payload so its CRC fails while valid frames
+	// still follow it — this is real mid-stream corruption, not a torn tail.
+	idx, _ := listSegments(dir)
+	path := segmentPath(dir, idx[0])
+	data, _ := os.ReadFile(path)
+	data[FrameHeaderSize] ^= 0xFF // first payload byte of frame 0
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := ScanAll(dir, func(Frame) error { return nil }); err == nil {
+		t.Fatal("expected mid-segment corruption error, got nil")
+	}
+}
+
 func TestScanAllTolerateTailTorn(t *testing.T) {
 	dir := t.TempDir()
 	writeNRecords(t, dir, 5, Options{})

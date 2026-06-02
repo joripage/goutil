@@ -129,12 +129,17 @@ directory listing is also chronological.
 
 | Failure mode | Records survive? |
 | --- | --- |
-| Process crash (panic, OOM, kill) | ✅ (OS flushes page cache) |
-| Container restart | ✅ |
+| Process crash (panic, OOM, kill) | ✅ (OS keeps the page cache) |
+| Container restart | ✅ (same host/kernel) |
 | Kernel panic / BSOD | ❌ |
 | Power loss without UPS | ❌ |
 
-Use only when raw throughput trumps durability.
+The ✅ rows hold because a successful `write()` hands the bytes to the **kernel
+page cache**, which outlives the process — a later read (even after a crash or
+restart) still sees them. Durability is lost only when the kernel itself goes
+down before writeback (panic / power loss), or if a "restart" moves to a
+different host or discards the volume. Use only when raw throughput trumps
+durability.
 
 ## Testing
 

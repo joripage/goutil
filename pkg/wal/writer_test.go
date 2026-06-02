@@ -151,6 +151,18 @@ func TestRotationContinuesSequence(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsOversizedPayload(t *testing.T) {
+	w := newTestWriter(t, Options{})
+	huge := make([]byte, MaxPayloadBytes+1)
+	if _, _, err := w.Append(kCmd, huge); err != ErrPayloadTooLarge {
+		t.Fatalf("expected ErrPayloadTooLarge, got %v", err)
+	}
+	// A payload exactly at the limit is accepted.
+	if _, _, err := w.Append(kCmd, make([]byte, MaxPayloadBytes)); err != nil {
+		t.Fatalf("payload at limit should be accepted, got %v", err)
+	}
+}
+
 func TestAppendAfterCloseFails(t *testing.T) {
 	w := newTestWriter(t, Options{})
 	_ = w.Close()

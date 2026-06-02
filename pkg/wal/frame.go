@@ -59,7 +59,11 @@ var ErrBadPayloadLen = errors.New("wal: payload length out of range")
 // poison the CRC by lying about length: a wrong length is caught when crc fails.
 func EncodeFrame(buf []byte, seqNo uint64, kind Kind, payload []byte) []byte {
 	if len(payload) > MaxPayloadBytes {
-		// Caller is responsible for not exceeding this — but encode is total.
+		// Defensive backstop only — EncodeFrame is total (never errors). The
+		// public Writer.Append rejects oversized payloads with
+		// ErrPayloadTooLarge *before* reaching here, so callers never lose data
+		// silently. Direct EncodeFrame users that bypass Append should validate
+		// length themselves.
 		payload = payload[:MaxPayloadBytes]
 	}
 	total := FrameHeaderSize + len(payload)
